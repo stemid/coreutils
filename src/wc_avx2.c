@@ -29,11 +29,11 @@
 
 extern bool
 wc_lines_avx2 (char const *file, int fd, uintmax_t *lines_out,
-               uintmax_t *bytes_out);
+               uintmax_t *bytes_out, bool live_count);
 
 extern bool
 wc_lines_avx2 (char const *file, int fd, uintmax_t *lines_out,
-               uintmax_t *bytes_out)
+               uintmax_t *bytes_out, bool live_count)
 {
   __m256i accumulator;
   __m256i accumulator2;
@@ -113,6 +113,12 @@ wc_lines_avx2 (char const *file, int fd, uintmax_t *lines_out,
       char *p = (char *)datap;
       while (p != end)
         lines += *p++ == '\n';
+
+      if (live_count)
+        {
+          printf("%d\r", lines);
+          fflush(stdout);
+        }
     }
 
   *lines_out = lines;

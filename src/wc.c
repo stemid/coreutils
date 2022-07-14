@@ -58,16 +58,16 @@
 
 static bool
 wc_lines (char const *file, int fd, uintmax_t *lines_out,
-          uintmax_t *bytes_out);
+          uintmax_t *bytes_out, bool live_count);
 #ifdef USE_AVX2_WC_LINECOUNT
 /* From wc_avx2.c */
 extern bool
 wc_lines_avx2 (char const *file, int fd, uintmax_t *lines_out,
-               uintmax_t *bytes_out);
+               uintmax_t *bytes_out, bool live_count);
 #endif
 static bool
 (*wc_lines_p) (char const *file, int fd, uintmax_t *lines_out,
-                uintmax_t *bytes_out) = wc_lines;
+                uintmax_t *bytes_out, bool live_count) = wc_lines;
 
 static bool debug;
 
@@ -94,6 +94,9 @@ static size_t page_size;
 
 /* Enable to _not_ treat non breaking space as a word separator.  */
 static bool posixly_correct;
+
+/* Enable live counter. */
+static bool live_count;
 
 /* The result of calling fstat or stat on a file descriptor or file.  */
 struct fstatus
@@ -125,6 +128,7 @@ static struct option const longopts[] =
   {"max-line-length", no_argument, NULL, 'L'},
   {GETOPT_HELP_OPTION_DECL},
   {GETOPT_VERSION_OPTION_DECL},
+  {"live", no_argument, NULL, 'i'},
   {NULL, 0, NULL, 0}
 };
 
@@ -215,6 +219,7 @@ the following order: newline, word, character, byte, maximum line length.\n\
                            If F is - then read names from standard input\n\
   -L, --max-line-length  print the maximum display width\n\
   -w, --words            print the word counts\n\
+  -i, --live             print live count at performance cost\n\
 "), stdout);
       fputs (HELP_OPTION_DESCRIPTION, stdout);
       fputs (VERSION_OPTION_DESCRIPTION, stdout);
@@ -283,7 +288,7 @@ write_counts (uintmax_t lines,
 }
 
 static bool
-wc_lines (char const *file, int fd, uintmax_t *lines_out, uintmax_t *bytes_out)
+wc_lines (char const *file, int fd, uintmax_t *lines_out, uintmax_t *bytes_out, bool live_count)
 {
   size_t bytes_read;
   uintmax_t lines, bytes;
@@ -329,6 +334,12 @@ wc_lines (char const *file, int fd, uintmax_t *lines_out, uintmax_t *bytes_out)
             }
         }
 
+      if (live_count)
+        {
+          printf("%d\r", lines);
+          fflush(stdout);
+        }
+
       /* If the average line length in the block is >= 15, then use
           memchr for the next block, where system specific optimizations
           may outweigh function call overhead.
@@ -352,7 +363,7 @@ wc_lines (char const *file, int fd, uintmax_t *lines_out, uintmax_t *bytes_out)
    CURRENT_POS is the current file offset if known, negative if unknown.
    Return true if successful.  */
 static bool
-wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos)
+wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos, bool live_count)
 {
   bool ok = true;
   char buf[BUFFER_SIZE + 1];
@@ -444,6 +455,12 @@ wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos)
                   break;
                 }
               bytes += bytes_read;
+
+              if (live_count)
+                {
+                  printf("%d\r", bytes);
+                  fflush(stdout);
+                }
             }
         }
     }
@@ -456,7 +473,7 @@ wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos)
 
       /* Use a separate loop when counting only lines or lines and bytes --
          but not chars or words.  */
-      ok = wc_lines_p (file, fd, &lines, &bytes);
+      ok = wc_lines_p (file, fd, &lines, &bytes, live_count);
     }
 #if MB_LEN_MAX > 1
 # define SUPPORT_OLD_MBRTOWC 1
@@ -592,6 +609,12 @@ wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos)
               p += n;
               bytes_read -= n;
               chars++;
+
+              if (live_count)
+                {
+                  printf("%d\r", chars);
+                  fflush(stdout);
+                }
             }
           while (bytes_read > 0);
 
@@ -671,6 +694,12 @@ wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos)
       if (linepos > linelength)
         linelength = linepos;
       words += in_word;
+
+      if (live_count)
+        {
+          printf("%d\r", words);
+          fflush(stdout);
+        }
     }
 
   if (count_chars < print_chars)
@@ -688,13 +717,13 @@ wc (int fd, char const *file_x, struct fstatus *fstatus, off_t current_pos)
 }
 
 static bool
-wc_file (char const *file, struct fstatus *fstatus)
+wc_file (char const *file, struct fstatus *fstatus, bool live_count)
 {
   if (! file || STREQ (file, "-"))
     {
       have_read_stdin = true;
       xset_binary_mode (STDIN_FILENO, O_BINARY);
-      return wc (STDIN_FILENO, file, fstatus, -1);
+      return wc (STDIN_FILENO, file, fstatus, -1, live_count);
     }
   else
     {
@@ -706,7 +735,7 @@ wc_file (char const *file, struct fstatus *fstatus)
         }
       else
         {
-          bool ok = wc (fd, file, fstatus, 0);
+          bool ok = wc (fd, file, fstatus, 0, live_count);
           if (close (fd) != 0)
             {
               error (0, errno, "%s", quotef (file));
@@ -807,9 +836,10 @@ main (int argc, char **argv)
 
   print_lines = print_words = print_chars = print_bytes = false;
   print_linelength = false;
+  live_count = false;
   total_lines = total_words = total_chars = total_bytes = max_line_length = 0;
 
-  while ((optc = getopt_long (argc, argv, "clLmw", longopts, NULL)) != -1)
+  while ((optc = getopt_long (argc, argv, "clLmwi", longopts, NULL)) != -1)
     switch (optc)
       {
       case 'c':
@@ -832,6 +862,10 @@ main (int argc, char **argv)
         print_linelength = true;
         break;
 
+      case 'i':
+        live_count = true;
+        break;
+
       case DEBUG_PROGRAM_OPTION:
         debug = true;
         break;
@@ -850,7 +884,10 @@ main (int argc, char **argv)
 
   if (! (print_lines || print_words || print_chars || print_bytes
          || print_linelength))
-    print_lines = print_words = print_bytes = true;
+    {
+      print_lines = print_words = print_bytes = true;
+      live_count = false;
+    }
 
   bool read_tokens = false;
   struct argv_iterator *ai;
@@ -971,7 +1008,7 @@ main (int argc, char **argv)
       if (skip_file)
         ok = false;
       else
-        ok &= wc_file (file_name, &fstatus[nfiles ? i : 0]);
+        ok &= wc_file (file_name, &fstatus[nfiles ? i : 0], live_count);
 
       if (! nfiles)
         fstatus[0].failed = 1;
@@ -982,7 +1019,7 @@ main (int argc, char **argv)
      However, no arguments on the --files0-from input stream is an error
      means don't read anything.  */
   if (ok && !files_from && argv_iter_n_args (ai) == 0)
-    ok &= wc_file (NULL, &fstatus[0]);
+    ok &= wc_file (NULL, &fstatus[0], live_count);
 
   if (read_tokens)
     readtokens0_free (&tok);
